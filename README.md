@@ -77,7 +77,7 @@ This enables automatic algorithmic trading with controlled execution and minimal
 ### Install
 
 ```bash
-pip install MetaTrader5 pandas pytz
+pip install MetaTrader5 pandas pytz time numpy 
 ```
 
 ---
