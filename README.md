@@ -12,8 +12,7 @@ Docs: https://www.mql5.com/en/docs/python_metatrader5
 
 ### 🏗 Architecture Diagram — MT5 Virtual + Real Order System
 
-```mermaid
-graph TD
+
     cfg[config.py] --> ACC[Account Class]
     ACC --> CONN[Connection Layer\nconnect()\nhandle_market_close()]
     ACC --> STATE[Trading State\nopen_orders[]\npending_orders[]\ndelay_orders[]\nban_swap[]\nban_positions{}]
