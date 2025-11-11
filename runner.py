@@ -1,6 +1,7 @@
 import time
 import MetaTrader5 as mt5
 from account import Account
+#from journal import load_account_state, save_account_state
 
 # Time to stay logged into each account (in seconds)
 ACCOUNT_SESSION_TIME = 40
@@ -11,9 +12,10 @@ ROTATION_PAUSE = 3  # seconds between accounts
 # Example accounts — replace with your real credentials
 # Example accounts — replace with your real credentials
 ACCOUNTS = [
-    Account("BROCKERNAME", 1112223, "password", "brockerName-Server"),
-    Account("BROCKERNAME1", 1112224, "password", "brockerName-Server1"),
+    # Account("Benchmark_USD", 1111111, "password", "BenchMark-Server"),
+    # Account("Trades_EUR", 2222222, "password", "Trades-Server"),
 ]
+
 
 def process_account(acc: Account):
     print(f"\n🔐 Connecting to {acc.name} ({acc.login})...")
@@ -33,11 +35,13 @@ def process_account(acc: Account):
         while time.time() - start_time < ACCOUNT_SESSION_TIME:
             acc.manage_daily_swap_updates()
             acc.collect_positions()
+            acc.add_position_sl_tp()
             acc.initialize_pending_orders()
             acc.execute_pending_orders()
             acc.monitor_virtual_orders()
             acc.compare_open_pending_orders()
             acc.print_pending_not_in_open()
+            acc.print_delay()
             acc.execute_delay_orders()
             time.sleep(3)  # monitor every 3 seconds
     except Exception as e:

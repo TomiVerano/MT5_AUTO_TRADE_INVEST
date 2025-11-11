@@ -1,12 +1,11 @@
-from _pydatetime import timedelta
+# from _pydatetime import timedelta
 
 import MetaTrader5 as mt5
 import pandas as pd
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 import pytz
 import numpy as np
 from config import *
-from profit_utils import *
 import time
 SOFIA_TZ = pytz.timezone("Europe/Sofia")
 
@@ -22,7 +21,10 @@ class Account:
         self.connected = False
         self.open_orders = []
         self.pending_orders = []
+        self.re_open_orders = []
         self.ban_swap = []
+        self.ban_positions = {}
+        self.re_ban_positions = {}
         self.delay_orders = []
         Account.ACCOUNTS.append(self)
 
@@ -37,18 +39,28 @@ class Account:
             print(f"{self.name}: ⏳ Waiting {int(seconds // 60)} min...")
             time.sleep(min(seconds, 60))
 
+
     def handle_market_close(self):
         """Check if market is closed → wait until market available."""
         now = datetime.now(SOFIA_TZ)
-        weekday = now.weekday()     # Monday=0 ... Sunday=6
+        weekday = now.weekday()
         current_time = now.time()
 
-        # Weekend
-        if weekday >= 5:   # Saturday(5) / Sunday(6)
+        # Weekend: Sat(5) / Sun(6)
+        if weekday >= 5:
             print(f"{self.name}: Market closed (Weekend). Waiting until Monday 00:10...")
+
+            # Compute next Monday
             days_until_monday = (7 - weekday) % 7
             monday = now + timedelta(days=days_until_monday)
+
+            # Construct Monday target time
             target_dt = monday.replace(hour=0, minute=10, second=0, microsecond=0)
+
+            # If resulting Monday 00:10 is already in the past → add 7 days
+            if target_dt <= now:
+                target_dt += timedelta(days=7)
+
             self._wait_until(target_dt)
             return
 
@@ -88,7 +100,6 @@ class Account:
         print(f"{self.name}: ✅ Connected successfully.")
         return True
 
-    # -------------------- MARGIN CHECK (NOT TESTED) --------------------
     def can_open_position(self, symbol=None, lot=0.01):
         """
         Check if the account has enough equity and margin to safely open a new position.
@@ -105,7 +116,7 @@ class Account:
 
         # --- Handle stop-out data safely ---
         stop_out_mode = getattr(info, "margin_so_mode", 0)
-
+        stop_out_call = getattr(info, "margin_so_call", 0.0)
         stop_out_level = getattr(info, "margin_so_so", 0.0)  # stop-out level in %
 
         # --- Compute minimum equity requirement ---
@@ -148,72 +159,60 @@ class Account:
         return True
 
     # -------------------- STATIC: CHECK IF SYMBOL IS TRADABLE --------------------
-    # feature off need fix and testing
-    # @staticmethod
-    # def is_tradable_now_static(symbol: str, account_currency: str = "USD") -> bool:
-    #
-    #     # SOFIA_TZ = pytz.timezone("Europe/Sofia")
-    #     now_sofia = datetime.now(SOFIA_TZ)
-    #     current_time = now_sofia.time()
-    #
-    #     symbol = symbol.upper()
-    #     if len(symbol) < 6:
-    #         return False
-    #     base = symbol[:3]
-    #
-    #     # Define trading windows per base currency (Sofia time)
-    #     windows_map = {
-    #         "EUR": [(dtime(15, 15), dtime(18, 45))],
-    #         "GBP": [(dtime(15, 15), dtime(18, 45))],
-    #         "USD": [(dtime(15, 15), dtime(18, 45))],
-    #         "JPY": [(dtime(3, 15), dtime(11, 45)), (dtime(15, 15), dtime(18, 45))],
-    #         "AUD": [(dtime(1, 15), dtime(4, 45))],
-    #         "NZD": [(dtime(1, 15), dtime(4, 45))],
-    #         "CAD": [(dtime(15, 15), dtime(23, 44))],
-    #         "CHF": [(dtime(15, 15), dtime(18, 45))],
-    #         "CNH": [(dtime(3, 15), dtime(11, 45))],
-    #         "NOK": [(dtime(15, 15), dtime(22, 45))],
-    #         "SEK": [(dtime(15, 15), dtime(22, 45))],
-    #         "ZAR": [(dtime(15, 15), dtime(22, 45))],
-    #         "MXN": [(dtime(15, 15), dtime(22, 45))],
-    #     }
-    #
-    #     # Optional: refine by account currency if needed
-    #     trading_windows = windows_map
-    #     windows = trading_windows.get(base)
-    #     if not windows:
-    #         return False
-    #
-    #     # Check if current Sofia time falls into any window
-    #     return any(start <= current_time <= end for start, end in windows)
+
+    @staticmethod
+    def is_tradable_now_static(symbol: str, account_currency: str = "USD") -> bool:
+
+        # SOFIA_TZ = pytz.timezone("Europe/Sofia")
+        now_sofia = datetime.now(SOFIA_TZ)
+        current_time = now_sofia.time()
+
+        symbol = symbol.upper()
+        if len(symbol) < 6:
+            return False
+        base = symbol[:3]
+
+        # Define trading windows per base currency (Sofia time)
+        windows_map = {
+            "EUR": [(dtime(15, 15), dtime(18, 45))],
+            "GBP": [(dtime(15, 15), dtime(18, 45))],
+            "USD": [(dtime(15, 15), dtime(18, 45))],
+            "JPY": [(dtime(3, 15), dtime(11, 45)), (dtime(15, 15), dtime(18, 45))],
+            "AUD": [(dtime(1, 15), dtime(4, 45))],
+            "NZD": [(dtime(1, 15), dtime(4, 45))],
+            "CAD": [(dtime(15, 15), dtime(23, 44))],
+            "CHF": [(dtime(15, 15), dtime(18, 45))],
+            "CNH": [(dtime(3, 15), dtime(11, 45))],
+            "NOK": [(dtime(15, 15), dtime(22, 45))],
+            "SEK": [(dtime(15, 15), dtime(22, 45))],
+            "ZAR": [(dtime(15, 15), dtime(22, 45))],
+            "MXN": [(dtime(15, 15), dtime(22, 45))],
+        }
+
+        # Optional: refine by account currency if needed
+        trading_windows = windows_map
+        windows = trading_windows.get(base)
+        if not windows:
+            return False
+
+        # Check if current Sofia time falls into any window
+        return any(start <= current_time <= end for start, end in windows)
 
     # -------------------- FINDS CURRENT ACCOUNT INFO --------------------
-
     @staticmethod
     def get_account_info():
         acc_info = mt5.account_info()
         if acc_info is None:
             return {}
-
-        info = {}
-        for field in dir(acc_info):
-            if not field.startswith("_"):
-                value = getattr(acc_info, field)
-                if not callable(value):
-                    info[field] = value
-
-        return info
-
+        return acc_info._asdict()
     @staticmethod
     def get_forex_pairs(money_type: str):
         symbols = mt5.symbols_get()
         if not symbols:
             return []
         return [s.name for s in symbols if money_type.upper() in s.name]
-
-    # -------------------- CALCULATING PROFIT --------------------
     @staticmethod
-    def calc_virtual_profit(vo: dict, account_currency) -> dict:
+    def calc_virtual_profit(vo: dict, account_currency: str = "USD") -> dict:
         """
         Calculate current virtual profit for a given order.
         Returns both profit in pips and in base account currency (USD/EUR).
@@ -236,6 +235,7 @@ class Account:
 
         # --- Pip & point calculation ---
         pip = 0.0001 if "JPY" not in symbol else 0.01
+        point = info.point
 
         # --- Current price depending on order type ---
         current_price = tick.bid if order_type == 1 else tick.ask
@@ -266,40 +266,42 @@ class Account:
         }
 
     # -------------------- CREATE A SIGNAL BUY SELL NONE --------------------
-    @staticmethod
-    def get_data(symbol, timeframe=mt5.TIMEFRAME_M5, period_fast=8, period_slow=21):
 
-        """
-        Create signal here.
-        Returns:
-            "buy"  -> fast EMA > slow EMA
-            "sell" -> fast EMA < slow EMA
-            None   -> not enough data or no signal
-        """
+    def get_data(self, symbol):
         now_sofia = pd.Timestamp.now(tz=SOFIA_TZ)
         end_utc = now_sofia.tz_convert("UTC")
 
-        # Load ~300 bars to compute EMAs well
-        rates = mt5.copy_rates_from(symbol, timeframe, end_utc.to_pydatetime(), 300)
-        if rates is None or len(rates) < period_slow + 2:
-            return None  # not enough data
+        start = pd.Timestamp("2025-09-21", tz="UTC")
 
+        rates = mt5.copy_rates_range(
+            symbol,
+            mt5.TIMEFRAME_M5,
+            start,
+            end_utc
+        )
+
+        # Check return
+        if rates is None or len(rates) < 21:
+            return None
+
+        # Convert → DataFrame
         df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
 
-        # Calculate EMAs
-        df['ema_fast'] = df['close'].ewm(span=period_fast).mean()
-        df['ema_slow'] = df['close'].ewm(span=period_slow).mean()
+        # Convert timestamp → datetime
+        df["time"] = pd.to_datetime(df["time"], unit="s")
 
-        # Last candle
-        last = df.iloc[-1]
+        # Compute EMA on closing prices
+        df["ema_fast"] = df["close"].ewm(span=8).mean()
+        df["ema_slow"] = df["close"].ewm(span=21).mean()
 
-        if last['ema_fast'] > last['ema_slow']:
+        ema_fast = df["ema_fast"].iloc[-1]
+        ema_slow = df["ema_slow"].iloc[-1]
+
+        # Signal logic
+        if ema_fast > ema_slow:
             return "buy"
-
-        elif last['ema_fast'] < last['ema_slow']:
+        elif ema_fast < ema_slow:
             return "sell"
-
         else:
             return None
 
@@ -320,6 +322,55 @@ class Account:
         for p in pending_only:
             print(f"Pending order | Symbol: {p['symbol']} | Ticket: {p.get('ticket')} | "
                   f"Signal: {p['signal']} | Volume: {p['volume']} | Virtual: {p['virtual']}")
+        print("-" * 60)
+
+    # -------------------- PRINT DELAY ORDERS  --------------------
+    def print_delay(self):
+        """
+        Compares delay_orders to open_orders and pending_orders.
+        Prints:
+         • Delay orders NOT in open_orders
+         • Delay orders NOT in pending_orders
+         • ALL delay_orders if any exist
+        """
+
+        open_symbols = {o["symbol"] for o in self.open_orders}
+        pending_symbols = {o["symbol"] for o in self.pending_orders}
+
+        not_in_open = [p for p in self.delay_orders if p["symbol"] not in open_symbols]
+        not_in_pending = [p for p in self.delay_orders if p["symbol"] not in pending_symbols]
+
+        # ==== 1) Print full delay list if exists ====
+        if self.delay_orders:
+            print(f"{self.name}: 📋 ALL delay_orders: {len(self.delay_orders)}")
+            for p in self.delay_orders:
+                print(f"   • Symbol: {p['symbol']} | Ticket: {p.get('ticket')} | "
+                      f"Signal: {p['signal']} | Volume: {p['volume']} | Virtual: {p['virtual']}")
+            print("-" * 60)
+        else:
+            print(f"{self.name}: ✅ No delay_orders stored.")
+            return
+
+        # ==== 2) Compare against open_orders ====
+        if not_in_open:
+            print(f"{self.name}: 🔹 Delay orders NOT in open_orders: {len(not_in_open)}")
+            for p in not_in_open:
+                print(f"   • Symbol: {p['symbol']} | Ticket: {p.get('ticket')} | "
+                      f"Signal: {p['signal']} | Volume: {p['volume']} | Virtual: {p['virtual']}")
+        else:
+            print(f"{self.name}: ✅ All delay_orders exist in open_orders.")
+
+        print("-" * 60)
+
+        # ==== 3) Compare against pending_orders ====
+        if not_in_pending:
+            print(f"{self.name}: 🔹 Delay orders NOT in pending_orders: {len(not_in_pending)}")
+            for p in not_in_pending:
+                print(f"   • Symbol: {p['symbol']} | Ticket: {p.get('ticket')} | "
+                      f"Signal: {p['signal']} | Volume: {p['volume']} | Virtual: {p['virtual']}")
+        else:
+            print(f"{self.name}: ✅ All delay_orders exist in pending_orders.")
+
         print("-" * 60)
 
     # -------------------- COMPARE OPEN & PENDING ORDERS --------------------
@@ -351,7 +402,6 @@ class Account:
                   f"Signal: {p['signal']} | Volume: {p['volume']} | Virtual: {p['virtual']}")
             print("-" * 60)
 
-    # -------------------- MODIFY TRADE PAIR ACCOUNTS --------------------
     def get_exotic_pairs(self):
         mapping = {
             "USD": {"USDZAR", "USDMXN", "USDSEK", "USDNOK"},
@@ -359,51 +409,105 @@ class Account:
             # Add other account currencies if needed
         }
         return mapping.get(self.get_account_info().get("currency").upper(), set())
-
     # -------------------- HELPER: AUTODETECT FILL MODE --------------------
-    @staticmethod
-    def _get_fill_mode(symbol):
-        """Try to detect allowed fill mode (FOK or IOC) for given symbol."""
-        try:
-            info = mt5.symbol_info(symbol)
-            if info is None:
-                return mt5.ORDER_FILLING_FOK  # fallback
-            # filling_mode is a bitmask; check for supported flags
-            if info.filling_mode & mt5.ORDER_FILLING_FOK:
-                return mt5.ORDER_FILLING_FOK
-            elif info.filling_mode & mt5.ORDER_FILLING_IOC:
-                return mt5.ORDER_FILLING_IOC
-            else:
-                return mt5.ORDER_FILLING_FOK  # default fallback
-        except (mt5.MT5Error, TypeError, ValueError) as e:
-            print("Order error:", e)
-            return mt5.ORDER_FILLING_FOK  # default fallback
+    def _get_fill_mode(self, symbol):
+        """Return allowed fill mode for the given symbol"""
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return mt5.ORDER_FILLING_FOK  # fallback
 
-    # -------------------- CREATE VIRTUAL ORDER --------------------
+        mode = info.filling_mode
+
+        if mode in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN):
+            return mode
+        else:
+            # fallback if symbol gives unusual value
+            return mt5.ORDER_FILLING_FOK
+
+    def apply_sl_tp_safe(self, pos, vo):
+        symbol = pos.symbol
+        entry = pos.price_open
+        sl = vo.get("real_sl")
+        tp = vo.get("real_tp")
+        stop_level = vo.get("stop_level", 0)
+        digits = vo.get("digits", 5)
+
+        # Ignore null
+        if sl is None and tp is None:
+            return False
+
+        # --- Validate direction rule ---
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            valid = (sl is None or sl < entry) and (tp is None or tp > entry)
+        else:
+            valid = (sl is None or sl > entry) and (tp is None or tp < entry)
+
+        # Auto-correct if invalid
+        if not valid:
+            fix = stop_level * 1.5
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                if sl >= entry: sl = round(entry - fix, digits)
+                if tp <= entry: tp = round(entry + fix, digits)
+            else:  # SELL
+                if sl <= entry: sl = round(entry + fix, digits)
+                if tp >= entry: tp = round(entry - fix, digits)
+            print(f"⚙ Auto-corrected SL/TP for {symbol}")
+
+        # --- Min distance from entry ---
+        if stop_level > 0:
+            if abs(sl - entry) < stop_level:
+                sl = round(entry - stop_level * 1.5, digits) if pos.type == mt5.POSITION_TYPE_BUY \
+                    else round(entry + stop_level * 1.5, digits)
+
+            if abs(tp - entry) < stop_level:
+                tp = round(entry + stop_level * 1.5, digits) if pos.type == mt5.POSITION_TYPE_BUY \
+                    else round(entry - stop_level * 1.5, digits)
+
+        # === validate + autocorrect logic here ===
+        # (not repeated for brevity)
+
+        # ✅ PLACE THIS CHECK HERE
+        # Skip if nothing changes
+        if round(pos.sl, digits) == round(sl, digits) and round(pos.tp, digits) == round(tp, digits):
+            # print(f"{symbol}: SL/TP unchanged → skip")
+            return False
+
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": pos.ticket,
+            "sl": sl,
+            "tp": tp,
+            "symbol": symbol,
+        }
+
+        result = mt5.order_send(request)
+        print("modify", symbol, result)
+        return result
+
     def create_virtual_order(self, symbol, signal, lot=VOL_ST):
         """Create a virtual order with proper SL/TP distances and broker safety adjustments."""
+
         tick = mt5.symbol_info_tick(symbol)
         info = mt5.symbol_info(symbol)
         if not tick or not info:
-            print(f"{self.name}: ⚠️ Missing tick or symbol info for {symbol}")
+            print(f"{self.name}: ⚠ Missing tick or symbol info for {symbol}")
             return None
 
-        # --- Constants and base configuration ---
         ep = self.get_exotic_pairs()
         pip = info.point
         digits = info.digits
         spread = (tick.ask - tick.bid)
-        stop_level = info.trade_stops_level * pip  # broker min distance for SL/TP
+        stop_level = info.trade_stops_level * pip
 
-        # --- Distance settings (wider for exotic pairs) ---
+        # --- Base distances ---
         base_distance = FIX_MARGIN_REAL * pip
         if symbol in ep:
-            base_distance *= VOL_MULT_FACTOR * 4.0  # buffer for high volatility
+            base_distance *= VOL_MULT_FACTOR * 4.0
 
         real_distance = max(base_distance, stop_level * 2)
         virt_distance = real_distance / 2
 
-        # --- Price levels based on direction ---
+        # --- Direction logic ---
         if signal.lower() == "buy":
             virt_tp = round(tick.ask + virt_distance, digits)
             virt_sl = round(tick.bid - virt_distance, digits)
@@ -416,18 +520,6 @@ class Account:
             real_tp = round(tick.bid - real_distance, digits)
             real_sl = round(tick.ask + real_distance, digits)
             order_type = mt5.ORDER_TYPE_SELL
-
-        # --- SL/TP validation (avoid Invalid Stops) ---
-        min_distance_ok = (abs(real_tp - tick.ask) > stop_level) and (abs(tick.bid - real_sl) > stop_level)
-        if not min_distance_ok:
-            adjust = stop_level * 1.2
-            if signal.lower() == "buy":
-                real_tp = round(tick.ask + adjust, digits)
-                real_sl = round(tick.bid - adjust, digits)
-            else:
-                real_tp = round(tick.bid - adjust, digits)
-                real_sl = round(tick.ask + adjust, digits)
-            print(f"{self.name}: ⚙️ Adjusted SL/TP for {symbol} to avoid invalid stops")
 
         # --- Compose virtual order dict ---
         vo = {
@@ -445,6 +537,8 @@ class Account:
             "virtual": True,
             "time": pd.Timestamp.now(),
             "fill_mode": self._get_fill_mode(symbol),
+            "stop_level": stop_level,
+            "digits": digits
         }
 
         print(
@@ -550,21 +644,32 @@ class Account:
             if before != after:
                 print(f"{self.name}: 🧹 Removed {symbol} from open_orders (ticket={ticket}).")
 
-        # --- remove from pending_orders ---
-        if hasattr(self, "pending_orders"):
-            before = len(self.pending_orders)
-            self.pending_orders = [
-                o for o in self.pending_orders
-                if o.get("symbol") != symbol
-            ]
-            after = len(self.pending_orders)
-            if before != after:
-                print(f"{self.name}: 🧹 Removed {symbol} from pending_orders")
-
         # --- remove from ban_positions if present ---
         if symbol in getattr(self, "ban_positions", {}):
             del self.ban_positions[symbol]
             print(f"{self.name}: 🚫 Unbanned {symbol} (closed position).")
+
+    def add_position_sl_tp(self):
+        if not self.connected:
+            print(f"{self.name}: ⚠️ Not connected. Call .connect() first.")
+            return
+
+        positions = mt5.positions_get()
+        if positions is None:
+            print(f"{self.name}: ⚠️ No positions found or MT5 error ->", mt5.last_error())
+            return
+
+        acc_info = self.get_account_info()
+        account_currency = acc_info.get("currency").upper()
+        for pos in positions:
+            symbol = pos.symbol
+
+            # Find matching pending order object
+            vo = next((x for x in self.open_orders if x["symbol"] == pos.symbol), None)
+            if not vo:
+                continue
+
+            self.apply_sl_tp_safe(pos, vo)
 
     # -------------------- EXECUTE REAL ORDER (robust linking) --------------------
     def execute_virtual_order(self, vo):
@@ -585,8 +690,8 @@ class Account:
             "volume": lot,
             "type": order_type,
             "price": price,
-            "sl": vo.get("real_sl"),
-            "tp": vo.get("real_tp"),
+            # "sl": vo.get("real_sl"),
+            # "tp": vo.get("real_tp"),
             "deviation": 50,
             "magic": 123456,
             "comment": f"{self.name} executed {vo['signal']}",
@@ -636,7 +741,6 @@ class Account:
             print(f"{self.name}: ⚠️ Could not confirm linked real position for {symbol}")
 
         return result
-
     # -------------------- COLLECT, SORT & BAN POSITIONS --------------------
     def collect_positions(self):
         """
@@ -748,6 +852,10 @@ class Account:
         acc_info = self.get_account_info()
         currency = acc_info.get("currency").upper()
 
+        # --- Get account currency automatically ---
+        # acc_info = self.get_account_info()
+        # currency = acc_info.get("currency", "USD").upper()  # fallback USD
+
         # --- Keywords to exclude anywhere in the symbol ---
         exclude_keywords = ("TRY","INDEX", "XAU", "XPT", "XPD", "XAG", "BTC", "ETH", "LTC", "XRP", "BCH", "DASH", "SOL", "UNI", "LINK", "ADA", "DOT", "DOGE", "ZEC", "XLM", "ETC", "ADA", "DOT", "DOGE", "ZEC", "XLM")
 
@@ -767,10 +875,12 @@ class Account:
         if not hasattr(self, "pending_orders"):
             self.pending_orders = []
 
+
+
         for pair in filtered_symbols:
             # Skip if symbol is banned or already in open_orders
-            # if pair in self.ban_positions:
-            #     continue
+            if pair in self.delay_orders:
+                continue
             # if any(o["symbol"] == pair for o in self.open_orders):
             #     continue
             if any(o["symbol"] == pair for o in self.pending_orders):
@@ -790,93 +900,9 @@ class Account:
             vo = self.create_virtual_order(pair, sig)
             if vo:
                 self.pending_orders.append(vo)
+                #self.ban_positions[vo["symbol"]] = vo["signal"]
 
         print(f"{self.name}: ✅ Pending orders initialized: {len(self.pending_orders)}")
-
-    # -------------------- EXECUTE PENDING VIRTUAL ORDERS --------------------
-    def execute_pending_orders(self):
-        """
-        Execute virtual orders from pending_orders if the symbol is currently tradable.
-        If the signal has changed, update the virtual order using full TP/SL and execute it.
-        Moves executed orders to open_orders and updates ban_positions.
-        """
-        if not self.connected:
-            print(f"{self.name}: ⚠️ Not connected. Call .connect() first.")
-            return
-
-        if not hasattr(self, "pending_orders") or not self.pending_orders:
-            print(f"{self.name}: ⚠️ No pending orders to execute.")
-            return
-
-        executed_count = 0
-        remaining_pending = []
-
-        for vo in self.pending_orders:
-            symbol = vo["symbol"]
-
-            # --- Skip if swap-banned ---
-            if symbol in getattr(self, "ban_swap", []):
-                print(f"{self.name}: 🚫 {symbol} is swap-banned. Skipping pending order.")
-                remaining_pending.append(vo)
-                continue
-
-            # --- Check if symbol is currently tradable --- 0ff
-            # if not Account.is_tradable_now_static(symbol, account_currency=acc_currency):
-            #     remaining_pending.append(vo)
-            #     continue
-
-            # --- Margin safety check before executing ---
-            if not self.can_open_position():
-                print(f"{self.name}: ⚠️ Not enough margin to open {symbol}.")
-                remaining_pending.append(vo)
-                continue
-
-            # --- Get current market signal ---
-            current_signal = self.get_data(symbol)
-            if not current_signal:
-                remaining_pending.append(vo)
-                continue
-
-            # --- Update virtual order if signal changed and move to delay orders ---
-            if current_signal is None:
-                continue
-            if vo["signal"].lower() != current_signal.lower() and vo["symbol"] not in self.delay_orders:
-                new_vo = self.create_virtual_order(symbol, current_signal, lot=vo["volume"])
-                if new_vo:
-                    # --- Close existing real positions ---
-                    pos_list = mt5.positions_get(symbol=symbol)
-                    if pos_list:
-                        for pos in pos_list:
-                            print(
-                                f"{self.name}: ⚙️ Closing existing position {pos.ticket} for {symbol} before executing new VO")
-                            close_result = self.close_real_order(ticket=pos.ticket, symbol=symbol)
-                            if close_result:
-                                now = pd.Timestamp.now()
-
-                                new_vo["comment"] = f"DELAY-REUSE {now.strftime('%Y-%m-%d %H:%M:%S')}"
-                                new_vo["time_created"] = now
-                                new_vo["time_execute"] = now + pd.Timedelta(minutes=9)
-
-                                self.delay_orders.append(new_vo)
-
-                                print(f"{self.name}: ⏳ VO scheduled for {symbol}, executes after 9 min.")
-
-                                vo["signal"] = current_signal
-                                self.open_orders.append(new_vo)
-
-            if any(o["symbol"] == symbol for o in self.open_orders):
-                remaining_pending.append(vo)
-                continue
-            else:
-                if vo["symbol"] not in self.delay_orders:
-                    result = self.execute_virtual_order(vo)
-                    if result:
-                        self.open_orders.append(vo)
-
-        # Update pending_orders with remaining (not yet executed)
-        self.pending_orders = remaining_pending
-
-        print(f"{self.name}: ✅ Executed {executed_count} virtual orders, {len(self.pending_orders)} still pending.")
 
     # -------------------- MONITOR VIRTUAL ORDERS --------------------
     def monitor_virtual_orders(self):
@@ -1012,6 +1038,7 @@ class Account:
         - At 23:40 → run apply_swap_to_orders()
         - Every day at 00:16 → clear self.ban_swap
         """
+        #SOFIA_TZ = pytz.timezone("Europe/Sofia")
         now = datetime.now(SOFIA_TZ)
         current_time = now.time()
 
@@ -1032,11 +1059,11 @@ class Account:
             else:
                 print(f"{self.name}: 🧹 {now.strftime('%A %H:%M')} — ban_swap already empty.")
 
-    # -------------------- EXECUTE DELAY ORDERS --------------------
     def execute_delay_orders(self):
-        now_sofia = datetime.now(SOFIA_TZ)
+        now = datetime.now()  # ✅ naive timestamp
 
-        ready = [vo for vo in self.delay_orders if now_sofia >= vo["time_execute"]]
+        ready = [vo for vo in self.delay_orders
+                 if now >= vo["time_execute"]]  # ✅ same-type comparison
 
         for vo in ready:
             symbol = vo["symbol"]
@@ -1048,7 +1075,86 @@ class Account:
                 self.open_orders.append(vo)
                 # self.ban_positions[symbol] = vo["signal"]
 
+            # remove executed order
             self.delay_orders = [o for o in self.delay_orders if o is not vo]
+
+    def execute_pending_orders(self):
+
+        if not self.connected:
+            print(f"{self.name}: ⚠️ Not connected. Call .connect() first.")
+            return
+
+        if not hasattr(self, "pending_orders") or not self.pending_orders:
+            print(f"{self.name}: ⚠️ No pending orders to execute.")
+            return
+
+        acc_currency = self.get_account_info().get("currency").upper()
+
+        executed_count = 0
+        remaining_pending = []
+
+        for vo in self.pending_orders:
+            symbol = vo["symbol"]
+
+            # --- Skip if swap-banned ---
+            if symbol in getattr(self, "ban_swap", []):
+                print(f"{self.name}: 🚫 {symbol} is swap-banned. Skipping pending order.")
+                remaining_pending.append(vo)
+                continue
+
+            # --- Margin safety check before executing ---
+            if not self.can_open_position():
+                print(f"{self.name}: ⚠️ Not enough margin to open {symbol}.")
+                remaining_pending.append(vo)
+                continue
+
+            open_pos = next((o for o in self.open_orders if o["symbol"] == symbol), None)
+            if not open_pos:
+                # execute
+                result = self.execute_virtual_order(vo)
+                if result:
+                    executed_count += 1
+                    self.open_orders.append(vo)
+
+                    # ✅ Remove from pending_orders (do NOT re-append to remaining list)
+                    print(
+                        f"{self.name}: ✅ Executed {executed_count} virtual orders, "
+                        f"{len(self.pending_orders) - executed_count} still pending."
+                    )
+                else:
+                    # execution failed → keep pending
+                    remaining_pending.append(vo)
+            else:
+                # position already exists
+                pending_pos = next((o for o in self.delay_orders if o["symbol"] == symbol), None)
+                if pending_pos and pending_pos["signal"] != vo["signal"]:
+                    pos_list = mt5.positions_get(symbol=symbol)
+                    if pos_list:
+                        for pos in pos_list:
+                            print(
+                                f"{self.name}: ⚙️ Closing existing position {pos.ticket} for {symbol} before executing new VO")
+                            close_result = self.close_real_order(ticket=pos.ticket, symbol=symbol)
+                            if close_result:
+                                now = datetime.now()
+
+                                dvo = {
+                                    **vo,
+                                    "time_created": now,
+                                    "time_execute": now + timedelta(minutes=9),
+                                    "comment": f"DELAY-SIGNAL-CHANGE {now.strftime('%Y-%m-%d %H:%M:%S')}"
+                                }
+
+                                self.delay_orders.append(dvo)
+
+                                print(
+                                    f"{self.name}: ⏳ Added DELAY for {symbol} — "
+                                    f"open:{open_pos['signal']} pending:{vo['signal']}"
+                                )
+        # ✅ Update list after loop
+        self.pending_orders = remaining_pending
+
+
+
 
 
 

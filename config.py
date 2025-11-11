@@ -13,7 +13,7 @@ FIX_MARGIN_REAL = 360     # Real TP/SL distance in pips
 # VOLUME_MULTIPLIER = 3     # Multiply lot size on reversal
 
 # ------------------ DEFAULT LOTS ------------------
-VOL_ST = 0.02       # Default lot size
+VOL_ST = 0.01       # Default lot size
 
 # ------------------ PROFIT REVERSAL ------------------
 # PROFIT_THRESHOLD = -2.2   # If virtual order loses this profit, trigger reversal
